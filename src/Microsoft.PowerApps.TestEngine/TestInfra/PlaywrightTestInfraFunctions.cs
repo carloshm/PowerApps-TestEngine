@@ -10,6 +10,16 @@ using Microsoft.PowerApps.TestEngine.System;
 
 namespace Microsoft.PowerApps.TestEngine.TestInfra
 {
+    /// <sumary>
+    /// Defines the type of route the network request should follow
+    /// </summary>
+    public enum ActionRouteType
+    {
+        Fulfill,
+        ContinueButAddHeaders,
+        RouteAndAddHeaders
+
+    }
     /// <summary>
     /// Playwright implementation of the test infrastructure function
     /// </summary>
@@ -144,40 +154,82 @@ namespace Microsoft.PowerApps.TestEngine.TestInfra
                 await Page.RouteAsync(mock.RequestURL, async route => await RouteNetworkRequest(route, mock));
             }
         }
-
         public async Task RouteNetworkRequest(IRoute route, NetworkRequestMock mock)
         {
             // For optional properties of NetworkRequestMock, if the property is not specified, 
             // the routing applies to all. Ex: If Method is null, we mock response whatever the method is.
             bool notMatch = false;
+            const string EXTENDED_HEADER_PREFIX = "x-mock-";
+            const string EXTENDED_HEADER_ROUTE_TYPE = "x-mock-type";
+            const string EXTENDED_HEADER_SERVER_URL = "x-mock-server-url";
 
             if (!string.IsNullOrEmpty(mock.Method))
             {
                 notMatch = !string.Equals(mock.Method, route.Request.Method);
             }
-
+            if (mock.Headers != null && mock.Headers.Count != 0)
+            {
+                foreach (var header in mock.Headers)
+                {
+                    // We only want to compare the headers that are not extended headers
+                    if(!header.Key.StartsWith(EXTENDED_HEADER_PREFIX)){
+                        var requestHeaderValue = await route.Request.HeaderValueAsync(header.Key);
+                        notMatch = notMatch || !string.Equals(header.Value, requestHeaderValue);
+                    }
+                }
+            }
             if (!string.IsNullOrEmpty(mock.RequestBodyFile))
             {
                 notMatch = notMatch || !string.Equals(route.Request.PostData, _fileSystem.ReadAllText(mock.RequestBodyFile));
             }
 
-            if (mock.Headers != null && mock.Headers.Count != 0)
-            {
-                foreach (var header in mock.Headers)
-                {
-                    var requestHeaderValue = await route.Request.HeaderValueAsync(header.Key);
-                    notMatch = notMatch || !string.Equals(header.Value, requestHeaderValue);
-                }
-            }
-
+            // If the request matches the mock           
             if (!notMatch)
             {
-                await route.FulfillAsync(new RouteFulfillOptions { Path = mock.ResponseDataFile });
+                // If the request has extended headers, we need to parse them and take action accordingly
+                // Based o the Route type, we either fulfill the request or continue with the request and add headers, or route to a different server and add headers
+                int routeTypeNum = 0;
+                string routeType = string.Empty;
+                
+                if(mock.Headers.TryGetValue(EXTENDED_HEADER_ROUTE_TYPE, out routeType)){
+                    int.TryParse(routeType, out routeTypeNum);
+                }
+
+                switch (routeTypeNum)
+                {
+                    case (int)ActionRouteType.Fulfill:
+                        await route.FulfillAsync(new RouteFulfillOptions { Path = mock.ResponseDataFile });
+                        break;
+
+                    case (int)ActionRouteType.ContinueButAddHeaders:
+                        var modifiedHeaders = AddMockHeaders(await route.Request.AllHeadersAsync(), mock.Headers);
+                        await route.ContinueAsync(new RouteContinueOptions { Headers = modifiedHeaders });
+                        break;
+
+                    case (int)ActionRouteType.RouteAndAddHeaders:
+                        var routedHeaders = AddMockHeaders(await route.Request.AllHeadersAsync(), mock.Headers);
+                        await route.ContinueAsync(new RouteContinueOptions { Url = mock.Headers[EXTENDED_HEADER_SERVER_URL], Headers = routedHeaders });
+                        break;
+                    default:
+                        await route.ContinueAsync();
+                        break;
+                }
             }
             else
             {
+                // If the request does not match the mock, continue without changes
                 await route.ContinueAsync();
             }
+        }
+
+        private IDictionary<string, string> AddMockHeaders(IDictionary<string, string> originalHeaders, IDictionary<string, string> mockHeaders)
+        {
+            foreach (var header in mockHeaders)
+            {
+                originalHeaders[header.Key] = header.Value;
+            }
+
+            return originalHeaders;
         }
 
         public async Task GoToUrlAsync(string url)
