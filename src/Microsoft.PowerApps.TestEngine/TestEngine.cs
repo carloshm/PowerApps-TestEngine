@@ -1,7 +1,9 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+using System;
 using System.Globalization;
+using System.Net;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.PowerApps.TestEngine.Config;
@@ -20,20 +22,23 @@ namespace Microsoft.PowerApps.TestEngine
         private readonly ITestReporter _testReporter;
         private readonly IFileSystem _fileSystem;
         private readonly ILoggerFactory _loggerFactory;
+        private readonly ITestEngineEvents _eventHandler;
 
-        private ILogger Logger { get; set; }
+        public ILogger Logger { get; set; }
 
         public TestEngine(ITestState state,
                           IServiceProvider serviceProvider,
                           ITestReporter testReporter,
                           IFileSystem fileSystem,
-                          ILoggerFactory loggerFactory)
+                          ILoggerFactory loggerFactory,
+                          ITestEngineEvents eventHandler)
         {
             _state = state;
             _serviceProvider = serviceProvider;
             _testReporter = testReporter;
             _fileSystem = fileSystem;
             _loggerFactory = loggerFactory;
+            _eventHandler = eventHandler;
         }
 
         /// <summary>
@@ -72,7 +77,7 @@ namespace Microsoft.PowerApps.TestEngine
                     throw new ArgumentNullException(nameof(environmentId));
                 }
 
-                if (tenantId == null || tenantId == Guid.Empty)
+                if (tenantId == null)
                 {
                     throw new ArgumentNullException(nameof(tenantId));
                 }
@@ -96,13 +101,7 @@ namespace Microsoft.PowerApps.TestEngine
                     Logger.LogDebug($"Using query: {queryParams}");
                 }
 
-                _state.ParseAndSetTestState(testConfigFile.FullName);
-                _state.SetEnvironment(environmentId);
-                _state.SetTenant(tenantId.ToString());
-
-                _state.SetDomain(domain);
-                Logger.LogDebug($"Using domain: {domain}");
-
+                // Create the output directory as early as possible so that any exceptions can be logged.
                 _state.SetOutputDirectory(outputDirectory.FullName);
                 Logger.LogDebug($"Using output directory: {outputDirectory.FullName}");
 
@@ -110,9 +109,26 @@ namespace Microsoft.PowerApps.TestEngine
                 _fileSystem.CreateDirectory(testRunDirectory);
                 Logger.LogInformation($"Test results will be stored in: {testRunDirectory}");
 
+                _state.ParseAndSetTestState(testConfigFile.FullName, Logger);
+                _state.SetEnvironment(environmentId);
+                _state.SetTenant(tenantId.ToString());
+
+                _state.SetDomain(domain);
+                Logger.LogDebug($"Using domain: {domain}");
+
                 await RunTestByBrowserAsync(testRunId, testRunDirectory, domain, queryParams);
                 _testReporter.EndTestRun(testRunId);
                 return _testReporter.GenerateTestReport(testRunId, testRunDirectory);
+            }
+            catch (UserInputException e)
+            {
+                _eventHandler.EncounteredException(e);
+                return testRunDirectory;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                _eventHandler.EncounteredException(new UserInputException(UserInputException.ErrorMapping.UserInputExceptionInvalidOutputPath.ToString()));
+                return "InvalidOutputDirectory";
             }
             catch (Exception e)
             {
@@ -152,7 +168,7 @@ namespace Microsoft.PowerApps.TestEngine
             }
         }
 
-        private CultureInfo GetLocaleFromTestSettings(string strLocale)
+        public CultureInfo GetLocaleFromTestSettings(string strLocale)
         {
             var locale = CultureInfo.CurrentCulture;
             try
@@ -166,13 +182,13 @@ namespace Microsoft.PowerApps.TestEngine
                     locale = new CultureInfo(strLocale);
                     Logger.LogDebug($"Locale: {locale.Name}");
                 }
+                return locale;
             }
-            catch (ArgumentException)
+            catch (CultureNotFoundException)
             {
-                Logger.LogError($"Locale from test suite definition {strLocale} unrecognized");
-                throw;
+                Logger.LogError($"Locale from test suite definition {strLocale} unrecognized.");
+                throw new UserInputException(UserInputException.ErrorMapping.UserInputExceptionInvalidTestSettings.ToString());
             }
-            return locale;
         }
     }
 }

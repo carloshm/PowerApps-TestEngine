@@ -29,6 +29,7 @@ namespace Microsoft.PowerApps.TestEngine.TestInfra
         private readonly ISingleTestInstanceState _singleTestInstanceState;
         private readonly IFileSystem _fileSystem;
 
+        public static string BrowserNotSupportedErrorMessage = "Browser not supported by Playwright, for more details check https://playwright.dev/dotnet/docs/browsers";
         private IPlaywright PlaywrightObject { get; set; }
         private IBrowser Browser { get; set; }
         private IBrowserContext BrowserContext { get; set; }
@@ -90,7 +91,7 @@ namespace Microsoft.PowerApps.TestEngine.TestInfra
             if (browser == null)
             {
                 _singleTestInstanceState.GetLogger().LogError("Browser not supported by Playwright, for more details check https://playwright.dev/dotnet/docs/browsers");
-                throw new InvalidOperationException("Browser not supported.");
+                throw new UserInputException(UserInputException.ErrorMapping.UserInputExceptionInvalidTestSettings.ToString());
             }
 
             Browser = await browser.LaunchAsync(launchOptions);
@@ -142,13 +143,13 @@ namespace Microsoft.PowerApps.TestEngine.TestInfra
                 if (string.IsNullOrEmpty(mock.RequestURL))
                 {
                     _singleTestInstanceState.GetLogger().LogError("RequestURL cannot be null");
-                    throw new InvalidOperationException();
+                    throw new UserInputException(UserInputException.ErrorMapping.UserInputExceptionTestConfig.ToString());
                 }
 
-                if (string.IsNullOrEmpty(mock.ResponseDataFile) || !_fileSystem.IsValidFilePath(mock.ResponseDataFile))
+                if (!_fileSystem.IsValidFilePath(mock.ResponseDataFile) || !_fileSystem.FileExists(mock.ResponseDataFile))
                 {
                     _singleTestInstanceState.GetLogger().LogError("ResponseDataFile is invalid or missing");
-                    throw new InvalidOperationException();
+                    throw new UserInputException(UserInputException.ErrorMapping.UserInputExceptionInvalidFilePath.ToString());
                 }
 
                 await Page.RouteAsync(mock.RequestURL, async route => await RouteNetworkRequest(route, mock));
@@ -257,8 +258,7 @@ namespace Microsoft.PowerApps.TestEngine.TestInfra
                 Page = await BrowserContext.NewPageAsync();
             }
 
-            // TODO: consider whether to make waiting for network idle state part of the function input
-            var response = await Page.GotoAsync(url, new PageGotoOptions() { WaitUntil = WaitUntilState.NetworkIdle });
+            var response = await Page.GotoAsync(url);
 
             // The response might be null because "The method either throws an error or returns a main resource response.
             // The only exceptions are navigation to about:blank or navigation to the same URL with a different hash, which would succeed and return null."
@@ -277,6 +277,20 @@ namespace Microsoft.PowerApps.TestEngine.TestInfra
             {
                 await Task.Delay(200);
                 await BrowserContext.CloseAsync();
+            }
+        }
+
+        public async Task DisposeAsync()
+        {
+            if (BrowserContext != null)
+            {
+                await BrowserContext.DisposeAsync();
+                BrowserContext = null;
+            }
+            if (PlaywrightObject != null)
+            {
+                PlaywrightObject.Dispose();
+                PlaywrightObject = null;
             }
         }
 
@@ -347,88 +361,75 @@ namespace Microsoft.PowerApps.TestEngine.TestInfra
             await Page.Keyboard.PressAsync("Tab", new KeyboardPressOptions { Delay = 20 });
         }
 
-        // Justification: Limited ability to run unit tests for 
-        // Playwright actions on the sign-in page
-        [ExcludeFromCodeCoverage]
         public async Task HandleUserPasswordScreen(string selector, string value, string desiredUrl)
         {
             var logger = _singleTestInstanceState.GetLogger();
-
-            // Setting options fot the RunAndWaitForNavigationAsync function
-            PageRunAndWaitForNavigationOptions options = new PageRunAndWaitForNavigationOptions();
-
-            // URL that should be redirected to
-            options.UrlString = desiredUrl;
 
             ValidatePage();
 
             try
             {
-                // Only continue if redirected to the correct page
-                await Page.RunAndWaitForNavigationAsync(async () =>
+                // Find the password box
+                await Page.Locator(selector).WaitForAsync();
+
+                // Fill in the password
+                await Page.FillAsync(selector, value);
+
+                // Submit password form
+                await this.ClickAsync("input[type=\"submit\"]");
+
+                PageWaitForSelectorOptions selectorOptions = new PageWaitForSelectorOptions();
+                selectorOptions.Timeout = 8000;
+
+                // For instances where there is a 'Stay signed in?' dialogue box
+                try
                 {
-                    // Find the password box
-                    await Page.Locator(selector).WaitForAsync();
+                    logger.LogDebug("Checking if asked to stay signed in.");
 
-                    // Fill in the password
-                    await Page.FillAsync(selector, value);
+                    // Check if we received a 'Stay signed in?' box?
+                    await Page.WaitForSelectorAsync("[id=\"KmsiCheckboxField\"]", selectorOptions);
+                    logger.LogDebug("Was asked to 'stay signed in'.");
 
-                    // Submit password form
-                    await this.ClickAsync("input[type=\"submit\"]");
+                    // Click to stay signed in
+                    await Page.ClickAsync("[id=\"idBtn_Back\"]");
+                }
+                // If there is no 'Stay signed in?' box, an exception will throw; just catch and continue
+                catch (Exception ssiException)
+                {
+                    logger.LogDebug("Exception encountered: " + ssiException.ToString());
 
-                    PageWaitForSelectorOptions selectorOptions = new PageWaitForSelectorOptions();
-                    selectorOptions.Timeout = 8000;
+                    // Keep record if passwordError was encountered
+                    bool hasPasswordError = false;
 
-                    // For instances where there is a 'Stay signed in?' dialogue box
                     try
                     {
-                        logger.LogDebug("Checking if asked to stay signed in.");
+                        selectorOptions.Timeout = 2000;
 
-                        // Check if we received a 'Stay signed in?' box?
-                        await Page.WaitForSelectorAsync("[id=\"KmsiCheckboxField\"]", selectorOptions);
-                        logger.LogDebug("Was asked to 'stay signed in'.");
-
-                        // Click to stay signed in
-                        await Page.ClickAsync("[id=\"idBtn_Back\"]");
+                        // Check if we received a password error
+                        await Page.WaitForSelectorAsync("[id=\"passwordError\"]", selectorOptions);
+                        hasPasswordError = true;
                     }
-                    // If there is no 'Stay signed in?' box, an exception will throw; just catch and continue
-                    catch (Exception ssiException)
+                    catch (Exception peException)
                     {
-                        logger.LogDebug("Exception encountered: " + ssiException.ToString());
-
-                        // Keep record if passwordError was encountered
-                        bool hasPasswordError = false;
-
-                        try
-                        {
-                            selectorOptions.Timeout = 2000;
-
-                            // Check if we received a password error
-                            await Page.WaitForSelectorAsync("[id=\"passwordError\"]", selectorOptions);
-                            hasPasswordError = true;
-                        }
-                        catch (Exception peException)
-                        {
-                            logger.LogDebug("Exception encountered: " + peException.ToString());
-                        }
-
-                        // If encountered password error, exit program
-                        if (hasPasswordError)
-                        {
-                            logger.LogError("Incorrect password entered. Make sure you are using the correct credentials.");
-                            throw new InvalidOperationException();
-                        }
-                        // If not, continue
-                        else
-                        {
-                            logger.LogDebug("Did not encounter an invalid password error.");
-                        }
-
-                        logger.LogDebug("Was not asked to 'stay signed in'.");
+                        logger.LogDebug("Exception encountered: " + peException.ToString());
                     }
 
-                    await Page.WaitForLoadStateAsync(LoadState.NetworkIdle);
-                }, options);
+                    // If encountered password error, exit program
+                    if (hasPasswordError)
+                    {
+                        logger.LogError("Incorrect password entered. Make sure you are using the correct credentials.");
+                        throw new UserInputException(UserInputException.ErrorMapping.UserInputExceptionLoginCredential.ToString());
+                    }
+                    // If not, continue
+                    else
+                    {
+                        logger.LogDebug("Did not encounter an invalid password error.");
+                    }
+
+                    logger.LogDebug("Was not asked to 'stay signed in'.");
+                }
+
+                await Page.WaitForURLAsync(desiredUrl);
             }
             catch (TimeoutException)
             {

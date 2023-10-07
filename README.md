@@ -67,7 +67,7 @@ See [Samples Introduction](https://github.com/microsoft/PowerApps-TestEngine/blo
 
 #### 1. Import a sample solution
 
-Choose one of the packaged solutions within the Samples folder (e.g., `PowerApps-TestEngine\samples\basicgallery\BasicGallery_1_0_0_2.zip`). You can import solutions [using the Dataverse portal](https://docs.microsoft.com/en-us/power-apps/maker/data-platform/import-update-export-solutions), or by using the [PAC CLI command line tool](https://learn.microsoft.com/en-us/power-platform/developer/cli/reference/solution#pac-solution-import). Remember the environment that you imported the solution to.
+Choose one of the packaged solutions within the Samples folder (e.g., `PowerApps-TestEngine\samples\basicgallery\BasicGallery_1_0_0_3.zip`). You can import solutions [using the Dataverse portal](https://docs.microsoft.com/en-us/power-apps/maker/data-platform/import-update-export-solutions), or by using the [PAC CLI command line tool](https://learn.microsoft.com/en-us/power-platform/developer/cli/reference/solution#pac-solution-import). Remember the environment that you imported the solution to.
 
 #### 2. Set up the config file
 
@@ -182,6 +182,12 @@ The way that the test plan files refer to the target app differs depending on wh
   2. Update your test plan file
      1. Open the test plan YAML file for the app
      1. Fill in the **appId** with the new App ID
+
+## Power Platform CLI usage
+
+To get started, download and install the [Microsoft Power Platform CLI](https://docs.microsoft.com/en-us/powerapps/developer/data-platform/powerapps-cli).
+
+Review this documentation regarding the execution of Test Engine in Power Platform CLI [here](https://learn.microsoft.com/en-us/power-platform/developer/cli/reference/tests).
 
 ## Known limitations
 
